@@ -1,0 +1,232 @@
+<?xml version="1.0" encoding="utf-8"?>
+<search>
+  <entry>
+    <title>ASA5505 uses Let&#39;s Encrypt SSL certification</title>
+    <url>/2018/12/07/ASA5505%20%E4%B8%8A%E5%BA%94%E7%94%A8Let&#39;s%20encrypt%20%E7%9A%84%E8%AF%81%E4%B9%A6/</url>
+    <content><![CDATA[<h1 id="ASA5505-上应用Let’s-encrypt-的证书"><a href="#ASA5505-上应用Let’s-encrypt-的证书" class="headerlink" title="ASA5505 上应用Let’s encrypt 的证书"></a>ASA5505 上应用Let’s encrypt 的证书</h1><hr>
+<p>公司有一台Cisco的ASA5505，一直被自己用来进行lab网络的VPN Gateway 接入。但是以前一直是使用ASA自身的自签名证书，并没有申请正式的域名证书。看到Let’s encrypt的免费证书真的很好用，就打算把这个ASA的自签名证书变成正式的域名证书。</p>
+<p>说起来容易，但是做起来发现不是那么容易。首先ASA5505 是比较老款的机器，并不支持Cisco REST API, 也就没有办法使用 <a href="https://github.com/chrismarget/certbot-asa">Cisco ASA plugin for Let’s Encrypt client</a>, 这个非常好用而且简单的插件。</p>
+<p>既然没法使用certbot，那就只能采用手动方式来安装证书。搜索了一下，只有这个哥们儿的应用场景和我一样<a href="http://www.3ops.com/implementacion-de-certificados-gratuitos-lets-encrypt-en-cisco-asa-para-accesos-vpn/">Implementación de Certificados Gratuitos Let’s Encrypt en Cisco ASA para Accesos VPN</a>，可他的blog是用西班牙文写的。本想找google翻译一下，忽然发现他引用的命令都是可以直接理解的，于是拿出当年玩日文版游戏瞎猜语句的懒劲儿，开始了我的安装步骤。</p>
+<h2 id="1-申请域名证书"><a href="#1-申请域名证书" class="headerlink" title="1.申请域名证书"></a>1.申请域名证书</h2><p>假设你打算应用在VPN网关上的域名是：asa.yourdomain.com 。那么首先使用一台服务器，安装nginx和letsencrypt certbot。因为国内的IPv4网络环境往往都封闭80和443端口，除非你去做了备案，才能保证可用，所以我选择了IPv6。首先设置web服务器网络接口ip是一个全球可路由的IPv6地址，然后在he.net 上面的FreeDNS 把这个IPv6地址指向 asa.yourdomain.com 。</p>
+<p>接着配置安装nginx，默认安装即可，我们只是使用它获取https在目标服务器的80/443端口自动验证。</p>
+<p>我的服务器是FreeBSD 11.2,所以命令是：</p>
+<figure class="highlight shell"><table><tr><td class="code"><pre><span class="line">pkg install nginx</span><br><span class="line">pkg install py27-certbot</span><br></pre></td></tr></table></figure>
+
+<p>如何获取证书，这里就不在赘述，网上有很多的教程，在FreeBSD里面的命令是，然后按照提示操作即可：</p>
+<figure class="highlight shell"><table><tr><td class="code"><pre><span class="line">certbot certonly --standalone</span><br></pre></td></tr></table></figure>
+
+<a id="more"></a>
+
+<p>总而言之，在你设置好 http服务器，并成功完成certbot验证之后，会在 <code>/usr/local/etc/letsencrypt/live/asa.yourdomain.com/</code><br>目录下，生成对应的证书文件。</p>
+<h2 id="2-转换证书格式"><a href="#2-转换证书格式" class="headerlink" title="2.转换证书格式"></a>2.转换证书格式</h2><p>在刚刚生成的证书目录中，会有以下4个文件：</p>
+<blockquote>
+<ul>
+<li>cert.pem: 服务器证书文件</li>
+<li>chain.pem: 查找用的链式证书</li>
+<li>fullchain.pem: cert.pem + chain.pem 的合体.  </li>
+<li>privkey.pem: 证书的私钥</li>
+</ul>
+</blockquote>
+<p>我们需要把证书转换成 PKCS12格式，因为ASA当中使用的证书格式是这个。因此需要用到openssl的命令：</p>
+<figure class="highlight shell"><table><tr><td class="code"><pre><span class="line">openssl pkcs12 -export -inkey privkey.pem -in cert.pem -name &quot;asa.yourdomain.com&quot; -out cert.p12</span><br></pre></td></tr></table></figure>
+
+<p>这里生成的cert.p12 文件，就是我们要用来在ASA上导入的证书。过程当中要自己新建一个密码口令，后面导入ASA时候会用到。不过这里说实话有个奇怪的地方，在我参考的西班牙语blog当中，那个哥们的命令是：</p>
+<figure class="highlight shell"><table><tr><td class="code"><pre><span class="line">openssl pkcs12 -export -inkey privkey.pem -in cert.pem -name &quot;vpn.tuempresa.com.ar&quot; -out cert.p12</span><br><span class="line"></span><br></pre></td></tr></table></figure>
+<p>这个-name后面跟随的域名和他之前写的域名不同，他在原始域名最后加入了”.ar”后缀。我查了openssl命令，这里应该没有特殊的含义，所以我就当原文当中的”.ar” 是一个笔误。</p>
+<blockquote>
+<p>-<strong>name</strong> section:<br>           Specifies the configuration file section to use (overrides default_ca in the ca section).</p>
+</blockquote>
+<h2 id="3-ASA上的操作"><a href="#3-ASA上的操作" class="headerlink" title="3.ASA上的操作"></a>3.ASA上的操作</h2><p>启动ASDM 的图形化界面，这样方便操作一些。</p>
+<h3 id="3-1-创建CA"><a href="#3-1-创建CA" class="headerlink" title="3.1 创建CA"></a>3.1 创建CA</h3><p>顺序是：<br>Configuration-Device Management-Ceritifcate Management-CA certificate-Add<br>在弹出的对话框当中，安装CA证书。<br>首先随便起个名字: CA-LETSENCRYPT<br>然后选择  “Paste Certificate in PEM format: “<br>上传 chain. PEM<br>最后选择Install certificate.</p>
+<h3 id="3-2-上传pkcs12格式的证书"><a href="#3-2-上传pkcs12格式的证书" class="headerlink" title="3.2 上传pkcs12格式的证书"></a>3.2 上传pkcs12格式的证书</h3><p>顺序是：<br>Configuration - Device Management - Ceritifcate Management - Identity Certificate - Add<br>在弹出的对话框当中，导入我们刚刚生成的证书。<br>首先还是起个名字: SRV-LETSENCRYPT<br>然后选择  “Import the identity certificate from a file (PKCS12 format with certificate (s) + private Key) “<br>输入之前openssl转换证书时候创建的密码口令 “Decryption Passphrase: “ .<br>上传 cert.p12 文件<br>最后选择 Add Certificate</p>
+<h3 id="3-3-关联VPN的对应配置文件"><a href="#3-3-关联VPN的对应配置文件" class="headerlink" title="3.3 关联VPN的对应配置文件"></a>3.3 关联VPN的对应配置文件</h3><p>这里可以重新创建vpn 配置文件，也可以在Configuration - Device Management 里面修改已经存在的配置文件，此处不在赘述具体步骤。</p>
+<hr>
+<p>以上就是ASA5505使用Let’s encrypt 证书的方法，不过记得每隔3个月要更新一下证书，也就是再把步骤1、2、3重来一遍。</p>
+]]></content>
+      <tags>
+        <tag>ASA5505</tag>
+        <tag>Cisco</tag>
+        <tag>Let&#39;s Encrypt</tag>
+      </tags>
+  </entry>
+  <entry>
+    <title>利用nvmet配合 QLogic 41000/45000系列 RNIC创建 NVME over Fabric target系统</title>
+    <url>/2020/09/10/nvmet-nof-target/</url>
+    <content><![CDATA[<p>NVME 现在正在慢慢替代传统的SCSI 成为主流的存储协议。在网络传输层面，也有了<a href="https://nvmexpress.org/wp-content/uploads/NVMe-over-Fabrics-1.1-2019.10.22-Ratified.pdf">NVME over Fabric</a> 协议规范。NVMe over Fabric支持把NVMe映射到多个Fabrics传输选项，主要包括FC、InfiniBand、RoCE v2、iWARP和TCP。</p>
+<p>但在这众多的传输协议选择当中，谁是最适合的呢？非常有意思的是，在NVME组织的白皮书当中，直接有这样的一段话：</p>
+<blockquote>
+<p>For instance, inorder to transmit NVMe protocol over a distance, the ideal underlying network or fabric technology will have the following characteristics:</p>
+</blockquote>
+<blockquote>
+<p>·Reliable, credit-based flow control and delivery mechanisms.This type of flow control allows the network or fabric to be self-throttling, providing a reliable connectionthat can guarantee delivery at the hardware level without the need to drop frames or packets due to congestion. <strong>Credit-based flow control is native to Fibre Channel, InfiniBand and PCI Express®transports.</strong></p>
+</blockquote>
+<p>也就是并没有把支持RDMA 技术的以太网放在NVME over Fabric的理想网络协议当中，虽然以太网这边也是借用了InfiniBand 网络的RDMA， 技术但是对于以太网来讲，流控真的是一个难点，需要交换机和网卡双方面的配合以及大量的复杂的配置过程。虽然在大规模的部署当中，还是存在一些问题，但是简单的小规模的验证测试，则是非常方便。</p>
+<h2 id="网卡硬件"><a href="#网卡硬件" class="headerlink" title="网卡硬件"></a>网卡硬件</h2><p>Marvell 的以太网网卡目前有E3 和E4 两个系列。 E3主要源自当年QLogic 收购的Broadcom的10G 网卡芯片，即57810, 57840系列。 E4则是QLogic后面发布的基于45000（100G能力）和41000（50G能力）两个系列。 QLogic后面被Marvell最终收购，成为Marvell产品线的一员。目前常见的有QL41132 （2x10G），QL41212（2x25G），QL45611（1x100G) 等网卡。 这里所有的E4 系列都可以使用下面的方法进行nvmet的设置。</p>
+<h2 id="软件准备"><a href="#软件准备" class="headerlink" title="软件准备"></a>软件准备</h2><blockquote>
+<p>CentOS 7.7 (Kernel 3.10.0-1062)</p>
+</blockquote>
+<blockquote>
+<p>Kernel Inbox OFED module</p>
+</blockquote>
+<blockquote>
+<p>Kernel Inbox Fastlinq driver (8.37.0.20)</p>
+</blockquote>
+<h2 id="Target-端配置"><a href="#Target-端配置" class="headerlink" title="Target 端配置"></a>Target 端配置</h2><h3 id="1-安装准备"><a href="#1-安装准备" class="headerlink" title="1. 安装准备"></a>1. 安装准备</h3><p>首先确认本地的块设备：</p>
+<figure class="highlight plain"><table><tr><td class="code"><pre><span class="line">[root@localhost ~]# lsblk</span><br><span class="line">NAME            MAJ:MIN RM   SIZE RO TYPE MOUNTPOINT</span><br><span class="line">sda               8:0    0 279.4G  0 disk</span><br><span class="line">├─sda1            8:1    0   200M  0 part &#x2F;boot&#x2F;efi</span><br><span class="line">├─sda2            8:2    0     1G  0 part &#x2F;boot</span><br><span class="line">└─sda3            8:3    0 278.2G  0 part</span><br><span class="line">  ├─centos-root 253:0    0    50G  0 lvm  &#x2F;</span><br><span class="line">  ├─centos-swap 253:1    0   7.7G  0 lvm  [SWAP]</span><br><span class="line">  └─centos-home 253:2    0 220.5G  0 lvm  &#x2F;home</span><br><span class="line">sr0              11:0    1  1024M  0 rom</span><br><span class="line">[root@localhost ~]#</span><br><span class="line"></span><br></pre></td></tr></table></figure>
+
+<p>然后看一下，目前加载了哪些模块与qedr（网卡RDMA 处理模块）相关。</p>
+<figure class="highlight plain"><table><tr><td class="code"><pre><span class="line">[root@localhost ~]# lsmod |grep qedr</span><br><span class="line">qedr                  105558  0</span><br><span class="line">ib_core               255469  13 qedr,rdma_cm,ib_cm,iw_cm,rpcrdma,ib_srp,ib_iser,ib_srpt,ib_umad,ib_uverbs,rdma_ucm,ib_ipoib,ib_isert</span><br><span class="line">qede                  134828  1 qedr</span><br><span class="line">qed                   645293  2 qede,qedr</span><br><span class="line">[root@localhost ~]#</span><br><span class="line">[root@localhost ~]#</span><br></pre></td></tr></table></figure>
+
+
+<p>然后加载nvmet 和nvmet-rdma 模块。</p>
+<figure class="highlight plain"><table><tr><td class="code"><pre><span class="line">[root@localhost ~]# modprobe nvmet</span><br><span class="line">[root@localhost ~]# modprobe nvmet-rdma</span><br><span class="line">[root@localhost ~]#</span><br><span class="line">[root@localhost ~]#</span><br><span class="line">[root@localhost ~]# lsmod |grep nvme</span><br><span class="line">nvmet_rdma             27231  0</span><br><span class="line">nvmet                  51395  1 nvmet_rdma</span><br><span class="line">rdma_cm                59991  7 rpcrdma,ib_srp,nvmet_rdma,ib_iser,ib_srpt,rdma_ucm,ib_isert</span><br><span class="line">ib_core               255469  14 qedr,rdma_cm,ib_cm,iw_cm,rpcrdma,ib_srp,nvmet_rdma,ib_iser,ib_srpt,ib_umad,ib_uverbs,rdma_ucm,ib_ipoib,ib_isert</span><br><span class="line">nvme_fc                33640  1 qla2xxx</span><br><span class="line">nvme_fabrics           20212  1 nvme_fc</span><br><span class="line">nvme_core              63717  2 nvme_fabrics,nvme_fc</span><br><span class="line">[root@localhost ~]#</span><br><span class="line"></span><br><span class="line"></span><br></pre></td></tr></table></figure>
+<a id="more"></a>
+
+<h3 id="2-创建块设备用于测试"><a href="#2-创建块设备用于测试" class="headerlink" title="2. 创建块设备用于测试"></a>2. 创建块设备用于测试</h3><p>通常有几种方式来创建nvme的块设备，一种是直接使用系统的nvme盘，另外就是创建内存盘，比如使用 null_blk 或者 brd 模块等等。我们这里使用null_blk，因为单纯测试网络传输的延迟，所以null_blk 最为方便。这个 <a href="https://www.kernel.org/doc/html/latest/block/null_blk.html">null_blk</a> 的介绍，可以参考的 kernel 手册中的解释。</p>
+<blockquote>
+<p>The null block device (/dev/nullb*) is used for benchmarking the various block-layer implementations. It emulates a block device of X gigabytes in size. It does not execute any read/write operation, just mark them as complete in the request queue.</p>
+</blockquote>
+<p>我们使用 “nr_devices” 模块以及 “gb” 参数来建立一个2G大小的块设备：nullb0  </p>
+ <figure class="highlight plain"><table><tr><td class="code"><pre><span class="line"> [root@localhost ~]# modprobe null_blk nr_devices&#x3D;1 gb&#x3D;2</span><br><span class="line">[root@localhost ~]# lsblk</span><br><span class="line">NAME            MAJ:MIN RM   SIZE RO TYPE MOUNTPOINT</span><br><span class="line">sda               8:0    0 931.5G  0 disk</span><br><span class="line">├─sda1            8:1    0   200M  0 part &#x2F;boot&#x2F;efi</span><br><span class="line">├─sda2            8:2    0     1G  0 part &#x2F;boot</span><br><span class="line">└─sda3            8:3    0 930.3G  0 part</span><br><span class="line">  ├─centos-root 253:0    0    50G  0 lvm  &#x2F;</span><br><span class="line">  ├─centos-swap 253:1    0  31.4G  0 lvm  [SWAP]</span><br><span class="line">  └─centos-home 253:2    0 848.9G  0 lvm  &#x2F;home</span><br><span class="line">sr0              11:0    1  1024M  0 rom</span><br><span class="line">nullb0          252:0    0     2G  0 disk</span><br><span class="line">[root@localhost ~]#</span><br><span class="line"></span><br></pre></td></tr></table></figure>
+
+<h3 id="3-创建nvmet-target-磁盘参数"><a href="#3-创建nvmet-target-磁盘参数" class="headerlink" title="3.创建nvmet target 磁盘参数"></a>3.创建nvmet target 磁盘参数</h3><p>进入目录, 此时目录当中内容为空。</p>
+<figure class="highlight plain"><table><tr><td class="code"><pre><span class="line">[root@localhost ~]# cd &#x2F;sys&#x2F;kernel&#x2F;config&#x2F;nvmet&#x2F;subsystems&#x2F;</span><br><span class="line">[root@localhost subsystems]# ls</span><br><span class="line">[root@localhost subsystems]#</span><br></pre></td></tr></table></figure>
+
+
+<p>手动创建一个目录，利用它作为target 磁盘。</p>
+<figure class="highlight plain"><table><tr><td class="code"><pre><span class="line">[root@localhost subsystems]# mkdir nvme-test-1</span><br><span class="line">[root@localhost subsystems]# ls</span><br><span class="line">nvme-test-1</span><br><span class="line">[root@localhost subsystems]#</span><br><span class="line"></span><br></pre></td></tr></table></figure>
+
+<p>进入目录后，可以发现系统会自动创建出相应的磁盘参数文件。</p>
+<figure class="highlight plain"><table><tr><td class="code"><pre><span class="line">[root@localhost subsystems]# cd nvme-test-1&#x2F;</span><br><span class="line">[root@localhost nvme-test-1]#</span><br><span class="line">[root@localhost nvme-test-1]# ls</span><br><span class="line">allowed_hosts  attr_allow_any_host  attr_serial  attr_version  namespaces</span><br><span class="line">[root@localhost nvme-test-1]#</span><br><span class="line"></span><br></pre></td></tr></table></figure>
+
+<p>配置相关磁盘参数，将之前创建的2G 大小null_blk 块设备映射给这个target。</p>
+<figure class="highlight plain"><table><tr><td class="code"><pre><span class="line">[root@localhost nvme-test-1]# echo -n 1 &gt; attr_allow_any_host</span><br><span class="line">[root@localhost nvme-test-1]#</span><br><span class="line">[root@localhost nvme-test-1]# mkdir namespaces&#x2F;1</span><br><span class="line">[root@localhost nvme-test-1]# echo -n &#x2F;dev&#x2F;nullb0 &gt; namespaces&#x2F;1&#x2F;device_path</span><br><span class="line">[root@localhost nvme-test-1]# echo -n 1 &gt; namespaces&#x2F;1&#x2F;enable</span><br><span class="line">[root@localhost nvme-test-1]#</span><br><span class="line"></span><br></pre></td></tr></table></figure>
+
+
+<h3 id="4-配置nvmet-target-网络端口参数"><a href="#4-配置nvmet-target-网络端口参数" class="headerlink" title="4.配置nvmet target 网络端口参数"></a>4.配置nvmet target 网络端口参数</h3><p>进入目录，此时目录内容为空。</p>
+<figure class="highlight plain"><table><tr><td class="code"><pre><span class="line">[root@localhost nvme-test-1]# cd &#x2F;sys&#x2F;kernel&#x2F;config&#x2F;nvmet&#x2F;ports&#x2F;</span><br><span class="line">[root@localhost ports]# ls</span><br><span class="line">[root@localhost ports]#</span><br><span class="line"></span><br></pre></td></tr></table></figure>
+
+<p>创建端口1，系统会自动生成相应的参数文件。</p>
+<figure class="highlight plain"><table><tr><td class="code"><pre><span class="line">[root@localhost ports]# mkdir 1</span><br><span class="line">[root@localhost ports]# cd 1</span><br><span class="line">[root@localhost 1]# ls</span><br><span class="line">addr_adrfam  addr_traddr  addr_treq  addr_trsvcid  addr_trtype  param_inline_data_size  referrals  subsystems</span><br><span class="line">[root@localhost 1]#</span><br><span class="line">[root@localhost 1]#</span><br><span class="line"></span><br><span class="line"></span><br></pre></td></tr></table></figure>
+
+<p>配置网络参数</p>
+<figure class="highlight plain"><table><tr><td class="code"><pre><span class="line">[root@localhost 1]# echo -n 192.168.11.100 &gt; addr_traddr</span><br><span class="line">[root@localhost 1]# echo -n rdma  &gt; addr_trtype</span><br><span class="line">[root@localhost 1]# echo -n 4420  &gt; addr_trsvcid</span><br><span class="line">[root@localhost 1]# echo -n ipv4  &gt; addr_adrfam</span><br><span class="line">[root@localhost 1]#</span><br></pre></td></tr></table></figure>
+
+<p>请在上面4个步骤完成之后，再创建软连接：</p>
+<figure class="highlight plain"><table><tr><td class="code"><pre><span class="line">[root@localhost 1]# ln -s &#x2F;sys&#x2F;kernel&#x2F;config&#x2F;nvmet&#x2F;subsystems&#x2F;nvme-test-1&#x2F; subsystems&#x2F;nvme-test-1</span><br><span class="line">[root@localhost 1]#</span><br><span class="line"></span><br><span class="line"> </span><br></pre></td></tr></table></figure>
+
+<p>此时，配置工作就完成了。如果一切正常，应该在dmesg 看到如下信息：</p>
+<figure class="highlight plain"><table><tr><td class="code"><pre><span class="line">nvmet: adding nsid 1 to subsystem nvme-test-1</span><br><span class="line">nvmet_rdma: enabling port 1 (192.168.11.100:4420)</span><br><span class="line"></span><br><span class="line"></span><br></pre></td></tr></table></figure>
+
+
+<h2 id="Initiator-端配置"><a href="#Initiator-端配置" class="headerlink" title="Initiator 端配置"></a>Initiator 端配置</h2><h3 id="1-安装nvme-cli-工具"><a href="#1-安装nvme-cli-工具" class="headerlink" title="1.安装nvme-cli 工具"></a>1.安装nvme-cli 工具</h3> <figure class="highlight plain"><table><tr><td class="code"><pre><span class="line">[root@localhost ~]# yum install nvme-cli</span><br><span class="line">…</span><br><span class="line"> </span><br><span class="line">Installed:</span><br><span class="line">  nvme-cli.x86_64 0:1.8.1-3.el7</span><br><span class="line">Complete!</span><br><span class="line"></span><br></pre></td></tr></table></figure>
+
+<h3 id="2-加载相关模块"><a href="#2-加载相关模块" class="headerlink" title="2.加载相关模块"></a>2.加载相关模块</h3><figure class="highlight plain"><table><tr><td class="code"><pre><span class="line">[root@localhost mnt]# modprobe qedr</span><br><span class="line">[root@localhost mnt]# modprobe nvme-rdma</span><br><span class="line">[root@localhost mnt]#</span><br><span class="line">[root@localhost mnt]# lsmod |grep qedr</span><br><span class="line">qedr                   92709  0</span><br><span class="line">ib_core               242235  15 qedr,rdma_cm,ib_cm,iw_cm,rpcrdma,ib_srp,ib_ucm,nvme_rdma,ib_iser,ib_srpt,ib_umad,ib_uverbs,rdma_ucm,ib_ipoib,ib_isert</span><br><span class="line">qede                  116373  1 qedr</span><br><span class="line">qed                   622744  4 qede,qedf,qedi,qedr</span><br><span class="line">[root@localhost mnt]#</span><br></pre></td></tr></table></figure>
+
+<h3 id="3-发现远端target-设备"><a href="#3-发现远端target-设备" class="headerlink" title="3.发现远端target 设备"></a>3.发现远端target 设备</h3><figure class="highlight plain"><table><tr><td class="code"><pre><span class="line">[root@localhost mnt]# nvme discover -t rdma -a 192.168.11.100 -s 4420</span><br><span class="line"></span><br><span class="line">Discovery Log Number of Records 1, Generation counter 1</span><br><span class="line">&#x3D;&#x3D;&#x3D;&#x3D;&#x3D;Discovery Log Entry 0&#x3D;&#x3D;&#x3D;&#x3D;&#x3D;&#x3D;</span><br><span class="line">trtype:  rdma</span><br><span class="line">adrfam:  ipv4</span><br><span class="line">subtype: nvme subsystem</span><br><span class="line">treq:    not specified</span><br><span class="line">portid:  1</span><br><span class="line">trsvcid: 4420</span><br><span class="line">subnqn:  nvme-test-1</span><br><span class="line">traddr:  192.168.11.100</span><br><span class="line">rdma_prtype: not specified</span><br><span class="line">rdma_qptype: connected</span><br><span class="line">rdma_cms:    rdma-cm</span><br><span class="line">rdma_pkey: 0x0000</span><br><span class="line">[root@localhost mnt]#</span><br><span class="line"></span><br></pre></td></tr></table></figure>
+<p>在这个步骤如果出现错误，请检测加载的模块（qedr,nvme-rdma…)和网络的连通性（比如双方是否可以ping 通，防火墙是否关闭等等）。</p>
+<h3 id="4-连接远端target-设备"><a href="#4-连接远端target-设备" class="headerlink" title="4.连接远端target 设备"></a>4.连接远端target 设备</h3><figure class="highlight plain"><table><tr><td class="code"><pre><span class="line">[root@localhost mnt]# nvme connect -t rdma -n nvme-test-1 -a 192.168.11.100 -s 4420</span><br><span class="line"></span><br></pre></td></tr></table></figure>
+<p>此时我们就可以看见这个2G 大小的nvme盘已经连上了。</p>
+<figure class="highlight plain"><table><tr><td class="code"><pre><span class="line">[root@localhost mnt]# lsblk</span><br><span class="line">NAME            MAJ:MIN RM   SIZE RO TYPE MOUNTPOINT</span><br><span class="line">sda               8:0    0 931.5G  0 disk</span><br><span class="line">├─sda1            8:1    0   200M  0 part &#x2F;boot&#x2F;efi</span><br><span class="line">├─sda2            8:2    0     1G  0 part &#x2F;boot</span><br><span class="line">└─sda3            8:3    0 930.3G  0 part</span><br><span class="line">  ├─centos-root 253:0    0    50G  0 lvm  &#x2F;</span><br><span class="line">  ├─centos-swap 253:1    0  31.4G  0 lvm  [SWAP]</span><br><span class="line">  └─centos-home 253:2    0 848.9G  0 lvm  &#x2F;home</span><br><span class="line">sr0              11:0    1  1024M  0 rom</span><br><span class="line">nvme0n1         259:0    0     2G  0 disk</span><br><span class="line">[root@localhost mnt]#</span><br><span class="line">[root@localhost mnt]#</span><br></pre></td></tr></table></figure>
+
+<h3 id="5-下载fio-工具进行性能测试"><a href="#5-下载fio-工具进行性能测试" class="headerlink" title="5.下载fio 工具进行性能测试"></a>5.下载fio 工具进行性能测试</h3><figure class="highlight plain"><table><tr><td class="code"><pre><span class="line"></span><br><span class="line">[root@localhost ~]# yum install fio</span><br></pre></td></tr></table></figure>
+
+<p>性能测试: 带宽</p>
+<figure class="highlight plain"><table><tr><td class="code"><pre><span class="line">[root@localhost ~]# fio --bs&#x3D;64k --numjobs&#x3D;16 --iodepth&#x3D;4 --loops&#x3D;1 --ioengine&#x3D;libaio --direct&#x3D;1 --invalidate&#x3D;1 --fsync_on_close&#x3D;1 --randrepeat&#x3D;1 --norandommap --time_based --runtime&#x3D;10 --filename&#x3D;&#x2F;dev&#x2F;nvme0n1 --name&#x3D;read-phase --rw&#x3D;randread  -group_reporting</span><br></pre></td></tr></table></figure>
+
+<p>性能测试：延迟</p>
+<figure class="highlight plain"><table><tr><td class="code"><pre><span class="line">[root@localhost ~]# fio --bs&#x3D;512 --numjobs&#x3D;1 --iodepth&#x3D;1 --loops&#x3D;1 --ioengine&#x3D;libaio --direct&#x3D;1 --invalidate&#x3D;1 --fsync_on_close&#x3D;1 --randrepeat&#x3D;1 --norandommap --time_based --runtime&#x3D;10 --filename&#x3D;&#x2F;dev&#x2F;nvme0n1 --name&#x3D;read-phase --rw&#x3D;randread  -group_reporting</span><br><span class="line"> </span><br></pre></td></tr></table></figure>
+
+
+
+
+]]></content>
+      <tags>
+        <tag>nvmet</tag>
+        <tag>RDMA</tag>
+        <tag>fastlinq</tag>
+        <tag>QLogic</tag>
+        <tag>Marvell</tag>
+      </tags>
+  </entry>
+  <entry>
+    <title>利用SPDK配合QLogic HBA创建FC target系统</title>
+    <url>/2020/09/08/qfc-spdk-target-v2/</url>
+    <content><![CDATA[<p>SPDK是最近比较热门的存储软件平台，用户态和轮询机制可以最大限度的保证驱动的性能。QLogic的HBA卡是目前市场上主流的FC控制器，服务器端的市场份额多年超过50%，而它在存储侧的市场份额则压倒性的领先。</p>
+<p>对于最新的SPDK平台，QLogic也在2018年放出了它的代码，而且最大的特点是同时支持传统的FCP和最新的FC-NVMe协议。 本文介绍了使用SPDK 配合QLE26xx 16G HBA 和QLE27xx 32G HBA, 搭建存储系统的方法。</p>
+<h2 id="软件准备"><a href="#软件准备" class="headerlink" title="软件准备"></a>软件准备</h2><blockquote>
+<ul>
+<li><a href="https://github.com/spdk/spdk/archive/v20.01.1.tar.gz">SPDK 20.01.1</a></li>
+<li><a href="http://fast.dpdk.org/rel/dpdk-19.11.tar.gz">DPDK 19.11</a></li>
+<li>QFC 4.5.3a</li>
+</ul>
+</blockquote>
+<h3 id="1-安装准备"><a href="#1-安装准备" class="headerlink" title="1. 安装准备"></a>1. 安装准备</h3><p>首先解压qfc 压缩包，解开后有3个目录，分别为qfc-spdk, qfc 和 umq 。暂时不动它们，稍后进行操作。</p>
+<p>解压SPDK的压缩包，进入其中的spdk-20.01.1/app目录。将刚才的解出的 qfc-spdk 目录拷贝至此。 进入spdk-20.01.1/lib目录，将刚才解出的qfc，umq目录拷贝至此。</p>
+<figure class="highlight plain"><table><tr><td class="code"><pre><span class="line">cd spdk-20.01.1&#x2F;</span><br><span class="line">cd app&#x2F;</span><br><span class="line">cp -R &#x2F;home&#x2F;qfc-spdk-4.5.3a&#x2F;qfc-spdk&#x2F; .</span><br><span class="line">   </span><br><span class="line">cd spdk-20.01.1&#x2F;lib</span><br><span class="line">cp -R &#x2F;home&#x2F;qfc-spdk-4.5.3a&#x2F;qfc .</span><br><span class="line">cp -R &#x2F;home&#x2F;qfc-spdk-4.5.3a&#x2F;umq&#x2F; .</span><br><span class="line"></span><br><span class="line"></span><br></pre></td></tr></table></figure>
+
+
+<p>然后回到spdk-20.01.1目录，将DPDK压缩包解压。</p>
+<figure class="highlight plain"><table><tr><td class="code"><pre><span class="line">tar zxvf &#x2F;home&#x2F;dpdk-19.11.tar.gz</span><br><span class="line"></span><br></pre></td></tr></table></figure>
+<a id="more"></a>
+
+<h3 id="2-编译DPDK代码"><a href="#2-编译DPDK代码" class="headerlink" title="2. 编译DPDK代码"></a>2. 编译DPDK代码</h3><p>打补丁</p>
+<figure class="highlight plain"><table><tr><td class="code"><pre><span class="line">#cd spdk-20.01.1</span><br><span class="line">#patch -p1 &lt; app&#x2F;qfc-spdk&#x2F;spdk-20.01.1.patch</span><br></pre></td></tr></table></figure>
+<p>这段代码补丁的主要作用是：</p>
+<ul>
+<li>把qfc-spdk 驱动加入spdk 平台</li>
+<li>把QLogic HBA卡的PCI IDs 加入到uio_pci_generic 驱动</li>
+</ul>
+<p>然后修改 spdk-20.01.1/CONFIG 文件</p>
+<figure class="highlight plain"><table><tr><td class="code"><pre><span class="line">Set CONFIG_NVMEFC&#x3D;y</span><br></pre></td></tr></table></figure>
+
+<p>编译DPDK，假设是使用x86_64平台：</p>
+<figure class="highlight plain"><table><tr><td class="code"><pre><span class="line"># cd dpdk-19.11</span><br><span class="line"># make install T&#x3D;x86_64-native-linuxapp-gcc DESTDIR&#x3D;. EXTRA_CFLAGS&#x3D;-fPIC </span><br><span class="line"></span><br></pre></td></tr></table></figure>
+
+
+
+<h3 id="3-编译SPDK代码"><a href="#3-编译SPDK代码" class="headerlink" title="3. 编译SPDK代码"></a>3. 编译SPDK代码</h3><p>先设定qfc-spdk的工作模式，编辑 app/qfc-spdk/Makefile，将模式改为qfc_tgt：</p>
+<pre><code> APP = qfc_tgt
+#APP = qfc_app</code></pre>
+<p>然后编译代码</p>
+<figure class="highlight plain"><table><tr><td class="code"><pre><span class="line"># cd spdk-20.01.1</span><br><span class="line"># .&#x2F;configure --with-dpdk&#x3D;.&#x2F;dpdk-19.11&#x2F;x86_64-native-linuxapp-gcc</span><br><span class="line"># make CONFIG_QFC&#x3D;y</span><br></pre></td></tr></table></figure>
+
+<p>这个步骤里面，如果Linux OS系统是最小化安装的，会提示缺少一些库文件，比如uuid, numactl 之类的。通过yum 或者apt-get 补上就好了。不过在CentOS 系统当中，有CUnit-devel 这个库是官方yum源没有提供，可以从 pkgs.org 上面直接下载。</p>
+<h3 id="4-设置QFC-SPDK-参数"><a href="#4-设置QFC-SPDK-参数" class="headerlink" title="4.设置QFC SPDK 参数"></a>4.设置QFC SPDK 参数</h3><p>上面编译工作都完成之后，就可以启动SPDK了。启动SPDK之前，首先编辑修改一下 <strong>qfc.conf.in</strong> 这个配置文件，文件位于 app/qfc-spdk 目录。</p>
+<p>里面的注释已经比较清楚了，如果是简单测试，其实修改下面几个部分即可：</p>
+<figure class="highlight plain"><table><tr><td class="code"><pre><span class="line">[QFC]</span><br><span class="line"></span><br><span class="line">  # default transport for physical port(s)</span><br><span class="line">  # FCP or NVME</span><br><span class="line">  Transport FCP</span><br><span class="line">#这里确定采用FC还是FC-NVMe</span><br><span class="line"></span><br><span class="line">[Malloc]</span><br><span class="line">  NumberOfLuns 8</span><br><span class="line">  LunSizeInMB 32</span><br><span class="line">#这里设置malloc内存盘，默认8个卷，每个大小32MB, 也可以使用真实磁盘或者NVMe盘。分别在[aio]，[nvme] 部分设置。</span><br><span class="line"></span><br><span class="line"></span><br><span class="line">[PortalGroup1]</span><br><span class="line">  Portal FC1 21000024ff5ba06a</span><br><span class="line">  Portal FC2 21000024ff5ba06b</span><br><span class="line"></span><br><span class="line">#portalgroup 用来绑定HBA卡的WWN，如果不知道具体wwn，可以在SPDK启动之后，查看系统信息获得，然后再回来修改这里。</span><br><span class="line"></span><br><span class="line">[InitiatorGroup4]</span><br><span class="line">  InitiatorName ALL</span><br><span class="line"></span><br><span class="line">#Initiatorgroup用来映射服务器的WWN，可以不限制，就是ALL，或者指定具体WWN。</span><br><span class="line"></span><br><span class="line"></span><br><span class="line">[TargetNode1]</span><br><span class="line">  TargetName disk1</span><br><span class="line">  TargetAlias &quot;Data Disk1&quot;</span><br><span class="line">  Mapping PortalGroup1 InitiatorGroup4</span><br><span class="line">  LUN0 Malloc4</span><br><span class="line">  LUN1 Malloc5</span><br><span class="line">  LUN2 Malloc6</span><br><span class="line">  LUN3 Malloc7</span><br><span class="line">  QueueDepth 64</span><br><span class="line"></span><br><span class="line"># 这里映射所有的LUN,端口，和服务器主机。必须至少有一个LUN0</span><br><span class="line"></span><br></pre></td></tr></table></figure>
+<p>其他不需要的部分可以直接注释掉。</p>
+<h3 id="5-启动SPDK"><a href="#5-启动SPDK" class="headerlink" title="5. 启动SPDK"></a>5. 启动SPDK</h3><p>首先运行脚本，注册HBA卡：</p>
+<figure class="highlight plain"><table><tr><td class="code"><pre><span class="line"># cd spdk-20.01.1	</span><br><span class="line"># sudo scripts&#x2F;setup.sh</span><br></pre></td></tr></table></figure>
+
+<p>这个动作每次设备重启之后，都需要重新注册一下。</p>
+<p>然后设置系统Huge page，可以通过DPDK 当中 usertools 目录里面的 dpdp-setup.sh 脚本来进行，需要预留至少6GB的内存huge page.</p>
+<figure class="highlight plain"><table><tr><td class="code"><pre><span class="line"># cd spdk-20.01.1</span><br><span class="line"># .&#x2F;dpdk-19.11&#x2F;usertools&#x2F;dpdk-setup.sh</span><br></pre></td></tr></table></figure>
+
+<p>在这个菜单方式的界面，选择huge page设置，设置的时候，输入内存块的数量，每个块是2MB，所以如果需要8GB的huge page就输入4096。</p>
+<p>最后通过命令行启动SPDK：</p>
+<figure class="highlight plain"><table><tr><td class="code"><pre><span class="line">.&#x2F;app&#x2F;qfc-spdk&#x2F;qfc_tgt -c .&#x2F;app&#x2F;qfc-spdk&#x2F;qfc.conf.in</span><br></pre></td></tr></table></figure>
+
+<p>如果在运行中看到如下报错：</p>
+<figure class="highlight plain"><table><tr><td class="code"><pre><span class="line">umq: 0: umq_load_file_fw:6260: filestat error &#x2F;lib&#x2F;firmware&#x2F;ql2700_fw.bin</span><br><span class="line">umq: 0: umq_init_hba:3020: Initialization failed.</span><br><span class="line">umq: 0: umq_ctrlr_init:1386: Unable to initialize HBA.</span><br></pre></td></tr></table></figure>
+
+<p>则说明在系统的 /lib/firmware 目录当中缺少firmware 文件，请把ql2700_fw.bin 文件拷贝到这个目录中。</p>
+<p>我在第一次运行SPDK 之后，会看到这行信息：</p>
+<figure class="highlight plain"><table><tr><td class="code"><pre><span class="line">umq: 3: umq_handle_aen:149: Target port Link Up: nn-0x20000024ff7799ab:pn-0x21000024ff7799ab</span><br><span class="line"></span><br></pre></td></tr></table></figure>
+
+<p>因此就知道我目前的HBA卡使用的端口，它的WWPN和WWNN号码，把WWPN 替换刚才 qfc.conf.in 文件当中 [PortalGroup1] 模块的内容，把信息改为：</p>
+<figure class="highlight plain"><table><tr><td class="code"><pre><span class="line">[PortalGroup1]</span><br><span class="line">#  Portal FC1 21000024ff5ba06a</span><br><span class="line">#  Portal FC2 21000024ff5ba06b</span><br><span class="line"></span><br><span class="line">  Portal FC1 21000024ff7799ab</span><br><span class="line"></span><br><span class="line"></span><br></pre></td></tr></table></figure>
+
+
+<p>然后重启spdk，即可正常启动FCP Target。 如果想测试FC-NVME，还是修改qfc.conf.in 对应模块即可。</p>
+<h3 id="6-服务器host端设置"><a href="#6-服务器host端设置" class="headerlink" title="6. 服务器host端设置"></a>6. 服务器host端设置</h3><p>如果是采用FCP，现在服务器端的HBA卡应该已经可以扫描到4个32M大小的LUN了。lsblk命令应该可以看见sd[X] 的设备，或者/dev目录也能看到。如果看不见，卸载再重新加载一下qla2xxx模块。</p>
+<p>如果是采用FC-NVMe，则是看到4个nvme设备，可以通过nvme list 命令或者lsblk，或者/dev目录查看。Linux 系统需要qla2xxx 驱动模块版本在10.0以上。如果还是8或者9，可以从QLogic网站直接下载升级安装。</p>
+]]></content>
+      <tags>
+        <tag>QLogic</tag>
+        <tag>SPDK</tag>
+        <tag>FC</tag>
+        <tag>target</tag>
+      </tags>
+  </entry>
+</search>

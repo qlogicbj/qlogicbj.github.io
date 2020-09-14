@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=2">
+<meta name="theme-color" content="#222">
+<meta name="generator" content="Hexo 5.1.1">
+  <link rel="apple-touch-icon" sizes="180x180" href="/images/apple-touch-icon-next.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="/images/favicon-32x32-next.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/images/favicon-16x16-next.png">
+  <link rel="mask-icon" href="/images/logo.svg" color="#222">
+
+<link rel="stylesheet" href="/css/main.css">
+
+
+
+<link rel="stylesheet" href="//cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@5.14.0/css/all.min.css">
+  <link rel="stylesheet" href="//cdn.jsdelivr.net/npm/animate.css@3.1.1/animate.min.css">
+
+<script class="hexo-configurations">
+    var NexT = window.NexT || {};
+    var CONFIG = {"hostname":"blog.qlogicbj.com","root":"/","scheme":"Gemini","version":"8.0.0","exturl":false,"sidebar":{"position":"left","display":"post","padding":18,"offset":12},"copycode":false,"bookmark":{"enable":false,"color":"#222","save":"auto"},"fancybox":false,"mediumzoom":false,"lazyload":false,"pangu":false,"comments":{"style":"tabs","active":null,"storage":true,"lazyload":false,"nav":null},"motion":{"enable":true,"async":false,"transition":{"post_block":"fadeIn","post_header":"fadeInDown","post_body":"fadeInDown","coll_header":"fadeInLeft","sidebar":"fadeInUp"}},"prism":false,"i18n":{"placeholder":"搜索...","empty":"没有找到任何搜索结果：${query}","hits_time":"找到 ${hits} 个搜索结果（用时 ${time} 毫秒）","hits":"找到 ${hits} 个搜索结果"},"path":"search.xml","localsearch":{"enable":true,"trigger":"auto","top_n_per_article":1,"unescape":false,"preload":false}};
+  </script>
+
+  <meta name="description" content="SPDK是最近比较热门的存储软件平台，用户态和轮询机制可以最大限度的保证驱动的性能。QLogic的HBA卡是目前市场上主流的FC控制器，服务器端的市场份额多年超过50%，而它在存储侧的市场份额则压倒性的领先。 对于最新的SPDK平台，QLogic也在2018年放出了它的代码，而且最大的特点是同时支持传统的FCP和最新的FC-NVMe协议。 本文介绍了使用SPDK 配合QLE26xx 16G HBA">
+<meta property="og:type" content="article">
+<meta property="og:title" content="利用SPDK配合QLogic HBA创建FC target系统">
+<meta property="og:url" content="http://blog.qlogicbj.com/2020/09/08/qfc-spdk-target-v2/index.html">
+<meta property="og:site_name" content="Draft Paper">
+<meta property="og:description" content="SPDK是最近比较热门的存储软件平台，用户态和轮询机制可以最大限度的保证驱动的性能。QLogic的HBA卡是目前市场上主流的FC控制器，服务器端的市场份额多年超过50%，而它在存储侧的市场份额则压倒性的领先。 对于最新的SPDK平台，QLogic也在2018年放出了它的代码，而且最大的特点是同时支持传统的FCP和最新的FC-NVMe协议。 本文介绍了使用SPDK 配合QLE26xx 16G HBA">
+<meta property="og:locale" content="zh_CN">
+<meta property="article:published_time" content="2020-09-08T05:09:00.000Z">
+<meta property="article:modified_time" content="2020-09-14T13:59:25.000Z">
+<meta property="article:author" content="Xiaosu">
+<meta property="article:tag" content="QLogic">
+<meta property="article:tag" content="SPDK">
+<meta property="article:tag" content="FC">
+<meta property="article:tag" content="target">
+<meta name="twitter:card" content="summary">
+
+
+<link rel="canonical" href="http://blog.qlogicbj.com/2020/09/08/qfc-spdk-target-v2/">
+
+
+<script data-pjax class="page-configurations">
+  // https://hexo.io/docs/variables.html
+  CONFIG.page = {
+    sidebar: "",
+    isHome : false,
+    isPost : true,
+    lang   : 'zh-CN'
+  };
+</script>
+
+  <title>利用SPDK配合QLogic HBA创建FC target系统 | Draft Paper</title>
+  
+
+
+
+
+
+
+  <noscript>
+  <style>
+  body { margin-top: 2rem; }
+
+  .use-motion .menu-item,
+  .use-motion .sidebar,
+  .use-motion .post-block,
+  .use-motion .pagination,
+  .use-motion .comments,
+  .use-motion .post-header,
+  .use-motion .post-body,
+  .use-motion .collection-header {
+    visibility: visible;
+  }
+
+  .use-motion .header,
+  .use-motion .site-brand-container .toggle,
+  .use-motion .footer { opacity: initial; }
+
+  .use-motion .site-title,
+  .use-motion .site-subtitle,
+  .use-motion .custom-logo-image {
+    opacity: initial;
+    top: initial;
+  }
+
+  .use-motion .logo-line {
+    transform: scaleX(1);
+  }
+
+  .search-pop-overlay, .sidebar-nav { display: none; }
+  .sidebar-panel { display: block; }
+  </style>
+</noscript>
+
+</head>
+
+<body itemscope itemtype="http://schema.org/WebPage" class="use-motion">
+  <div class="headband"></div>
+
+  <main class="main">
+    <header class="header" itemscope itemtype="http://schema.org/WPHeader">
+      <div class="header-inner"><div class="site-brand-container">
+  <div class="site-nav-toggle">
+    <div class="toggle" aria-label="切换导航栏">
+        <span class="toggle-line"></span>
+        <span class="toggle-line"></span>
+        <span class="toggle-line"></span>
+    </div>
+  </div>
+
+  <div class="site-meta">
+
+    <a href="/" class="brand" rel="start">
+      <i class="logo-line"></i>
+      <h1 class="site-title">Draft Paper</h1>
+      <i class="logo-line"></i>
+    </a>
+  </div>
+
+  <div class="site-nav-right">
+    <div class="toggle popup-trigger">
+        <i class="fa fa-search fa-fw fa-lg"></i>
+    </div>
+  </div>
+</div>
+
+
+
+<nav class="site-nav">
+  <ul class="main-menu menu">
+        <li class="menu-item menu-item-home">
+
+    <a href="/" rel="section"><i class="fa fa-home fa-fw"></i>首页</a>
+
+  </li>
+        <li class="menu-item menu-item-tags">
+
+    <a href="/tags/" rel="section"><i class="fa fa-tags fa-fw"></i>标签</a>
+
+  </li>
+      <li class="menu-item menu-item-search">
+        <a role="button" class="popup-trigger"><i class="fa fa-search fa-fw"></i>搜索
+        </a>
+      </li>
+  </ul>
+</nav>
+
+
+
+  <div class="search-pop-overlay">
+    <div class="popup search-popup">
+        <div class="search-header">
+  <span class="search-icon">
+    <i class="fa fa-search"></i>
+  </span>
+  <div class="search-input-container">
+    <input autocomplete="off" autocapitalize="off" maxlength="80"
+           placeholder="搜索..." spellcheck="false"
+           type="search" class="search-input">
+  </div>
+  <span class="popup-btn-close">
+    <i class="fa fa-times-circle"></i>
+  </span>
+</div>
+<div class="search-result-container no-result">
+  <div class="search-result-icon">
+    <i class="fa fa-spinner fa-pulse fa-5x"></i>
+  </div>
+</div>
+
+    </div>
+  </div>
+
+</div>
+        
+  
+  <div class="toggle sidebar-toggle">
+    <span class="toggle-line"></span>
+    <span class="toggle-line"></span>
+    <span class="toggle-line"></span>
+  </div>
+
+  <aside class="sidebar">
+
+    <div class="sidebar-inner sidebar-nav-active sidebar-toc-active">
+      <ul class="sidebar-nav">
+        <li class="sidebar-nav-toc">
+          文章目录
+        </li>
+        <li class="sidebar-nav-overview">
+          站点概览
+        </li>
+      </ul>
+
+      <!--noindex-->
+      <section class="post-toc-wrap sidebar-panel">
+          <div class="post-toc animated"><ol class="nav"><li class="nav-item nav-level-2"><a class="nav-link" href="#%E8%BD%AF%E4%BB%B6%E5%87%86%E5%A4%87"><span class="nav-number">1.</span> <span class="nav-text">软件准备</span></a><ol class="nav-child"><li class="nav-item nav-level-3"><a class="nav-link" href="#1-%E5%AE%89%E8%A3%85%E5%87%86%E5%A4%87"><span class="nav-number">1.1.</span> <span class="nav-text">1. 安装准备</span></a></li><li class="nav-item nav-level-3"><a class="nav-link" href="#2-%E7%BC%96%E8%AF%91DPDK%E4%BB%A3%E7%A0%81"><span class="nav-number">1.2.</span> <span class="nav-text">2. 编译DPDK代码</span></a></li><li class="nav-item nav-level-3"><a class="nav-link" href="#3-%E7%BC%96%E8%AF%91SPDK%E4%BB%A3%E7%A0%81"><span class="nav-number">1.3.</span> <span class="nav-text">3. 编译SPDK代码</span></a></li><li class="nav-item nav-level-3"><a class="nav-link" href="#4-%E8%AE%BE%E7%BD%AEQFC-SPDK-%E5%8F%82%E6%95%B0"><span class="nav-number">1.4.</span> <span class="nav-text">4.设置QFC SPDK 参数</span></a></li><li class="nav-item nav-level-3"><a class="nav-link" href="#5-%E5%90%AF%E5%8A%A8SPDK"><span class="nav-number">1.5.</span> <span class="nav-text">5. 启动SPDK</span></a></li><li class="nav-item nav-level-3"><a class="nav-link" href="#6-%E6%9C%8D%E5%8A%A1%E5%99%A8host%E7%AB%AF%E8%AE%BE%E7%BD%AE"><span class="nav-number">1.6.</span> <span class="nav-text">6. 服务器host端设置</span></a></li></ol></li></ol></div>
+      </section>
+      <!--/noindex-->
+
+      <section class="site-overview-wrap sidebar-panel">
+        <div class="site-author animated" itemprop="author" itemscope itemtype="http://schema.org/Person">
+  <p class="site-author-name" itemprop="name">Xiaosu</p>
+  <div class="site-description" itemprop="description"></div>
+</div>
+<div class="site-state-wrap animated">
+  <nav class="site-state">
+      <div class="site-state-item site-state-posts">
+          <a href="/archives">
+          <span class="site-state-item-count">3</span>
+          <span class="site-state-item-name">日志</span>
+        </a>
+      </div>
+      <div class="site-state-item site-state-tags">
+            <a href="/tags/">
+          
+        <span class="site-state-item-count">11</span>
+        <span class="site-state-item-name">标签</span></a>
+      </div>
+  </nav>
+</div>
+  <div class="links-of-author animated">
+      <span class="links-of-author-item">
+        <a href="mailto:yourname@gmail.com" title="E-Mail → mailto:yourname@gmail.com" rel="noopener" target="_blank"><i class="fa fa-envelope fa-fw"></i>E-Mail</a>
+      </span>
+  </div>
+
+
+
+      </section>
+    </div>
+  </aside>
+  <div class="sidebar-dimmer"></div>
+
+
+    </header>
+
+    
+  <div class="back-to-top">
+    <i class="fa fa-arrow-up"></i>
+    <span>0%</span>
+  </div>
+
+<noscript>
+  <div class="noscript-warning">Theme NexT works best with JavaScript enabled</div>
+</noscript>
+
+
+    <div class="main-inner post posts-expand">
+      
+
+      
+
+    
+  
+  
+  <article itemscope itemtype="http://schema.org/Article" class="post-block" lang="zh-CN">
+    <link itemprop="mainEntityOfPage" href="http://blog.qlogicbj.com/2020/09/08/qfc-spdk-target-v2/">
+
+    <span hidden itemprop="author" itemscope itemtype="http://schema.org/Person">
+      <meta itemprop="image" content="/images/avatar.gif">
+      <meta itemprop="name" content="Xiaosu">
+      <meta itemprop="description" content="">
+    </span>
+
+    <span hidden itemprop="publisher" itemscope itemtype="http://schema.org/Organization">
+      <meta itemprop="name" content="Draft Paper">
+    </span>
+
+    
+    
+      <header class="post-header">
+        <h1 class="post-title" itemprop="name headline">
+          利用SPDK配合QLogic HBA创建FC target系统
+        </h1>
+
+        <div class="post-meta-container">
+          <div class="post-meta">
+    <span class="post-meta-item">
+      <span class="post-meta-item-icon">
+        <i class="far fa-calendar"></i>
+      </span>
+      <span class="post-meta-item-text">发表于</span>
+
+      <time title="创建时间：2020-09-08 13:09:00" itemprop="dateCreated datePublished" datetime="2020-09-08T13:09:00+08:00">2020-09-08</time>
+    </span>
+      <span class="post-meta-item">
+        <span class="post-meta-item-icon">
+          <i class="far fa-calendar-check"></i>
+        </span>
+        <span class="post-meta-item-text">更新于</span>
+        <time title="修改时间：2020-09-14 21:59:25" itemprop="dateModified" datetime="2020-09-14T21:59:25+08:00">2020-09-14</time>
+      </span>
+
+  
+</div>
+
+        </div>
+      </header>
+
+    
+    
+    
+    <div class="post-body" itemprop="articleBody">
+        <p>SPDK是最近比较热门的存储软件平台，用户态和轮询机制可以最大限度的保证驱动的性能。QLogic的HBA卡是目前市场上主流的FC控制器，服务器端的市场份额多年超过50%，而它在存储侧的市场份额则压倒性的领先。</p>
+<p>对于最新的SPDK平台，QLogic也在2018年放出了它的代码，而且最大的特点是同时支持传统的FCP和最新的FC-NVMe协议。 本文介绍了使用SPDK 配合QLE26xx 16G HBA 和QLE27xx 32G HBA, 搭建存储系统的方法。</p>
+<h2 id="软件准备"><a href="#软件准备" class="headerlink" title="软件准备"></a>软件准备</h2><blockquote>
+<ul>
+<li><a target="_blank" rel="noopener" href="https://github.com/spdk/spdk/archive/v20.01.1.tar.gz">SPDK 20.01.1</a></li>
+<li><a target="_blank" rel="noopener" href="http://fast.dpdk.org/rel/dpdk-19.11.tar.gz">DPDK 19.11</a></li>
+<li>QFC 4.5.3a</li>
+</ul>
+</blockquote>
+<h3 id="1-安装准备"><a href="#1-安装准备" class="headerlink" title="1. 安装准备"></a>1. 安装准备</h3><p>首先解压qfc 压缩包，解开后有3个目录，分别为qfc-spdk, qfc 和 umq 。暂时不动它们，稍后进行操作。</p>
+<p>解压SPDK的压缩包，进入其中的spdk-20.01.1/app目录。将刚才的解出的 qfc-spdk 目录拷贝至此。 进入spdk-20.01.1/lib目录，将刚才解出的qfc，umq目录拷贝至此。</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br></pre></td><td class="code"><pre><span class="line">cd spdk-20.01.1&#x2F;</span><br><span class="line">cd app&#x2F;</span><br><span class="line">cp -R &#x2F;home&#x2F;qfc-spdk-4.5.3a&#x2F;qfc-spdk&#x2F; .</span><br><span class="line">   </span><br><span class="line">cd spdk-20.01.1&#x2F;lib</span><br><span class="line">cp -R &#x2F;home&#x2F;qfc-spdk-4.5.3a&#x2F;qfc .</span><br><span class="line">cp -R &#x2F;home&#x2F;qfc-spdk-4.5.3a&#x2F;umq&#x2F; .</span><br><span class="line"></span><br><span class="line"></span><br></pre></td></tr></table></figure>
+
+
+<p>然后回到spdk-20.01.1目录，将DPDK压缩包解压。</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">tar zxvf &#x2F;home&#x2F;dpdk-19.11.tar.gz</span><br><span class="line"></span><br></pre></td></tr></table></figure>
+<a id="more"></a>
+
+<h3 id="2-编译DPDK代码"><a href="#2-编译DPDK代码" class="headerlink" title="2. 编译DPDK代码"></a>2. 编译DPDK代码</h3><p>打补丁</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">#cd spdk-20.01.1</span><br><span class="line">#patch -p1 &lt; app&#x2F;qfc-spdk&#x2F;spdk-20.01.1.patch</span><br></pre></td></tr></table></figure>
+<p>这段代码补丁的主要作用是：</p>
+<ul>
+<li>把qfc-spdk 驱动加入spdk 平台</li>
+<li>把QLogic HBA卡的PCI IDs 加入到uio_pci_generic 驱动</li>
+</ul>
+<p>然后修改 spdk-20.01.1/CONFIG 文件</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">Set CONFIG_NVMEFC&#x3D;y</span><br></pre></td></tr></table></figure>
+
+<p>编译DPDK，假设是使用x86_64平台：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line"># cd dpdk-19.11</span><br><span class="line"># make install T&#x3D;x86_64-native-linuxapp-gcc DESTDIR&#x3D;. EXTRA_CFLAGS&#x3D;-fPIC </span><br><span class="line"></span><br></pre></td></tr></table></figure>
+
+
+
+<h3 id="3-编译SPDK代码"><a href="#3-编译SPDK代码" class="headerlink" title="3. 编译SPDK代码"></a>3. 编译SPDK代码</h3><p>先设定qfc-spdk的工作模式，编辑 app/qfc-spdk/Makefile，将模式改为qfc_tgt：</p>
+<pre><code> APP = qfc_tgt
+#APP = qfc_app</code></pre>
+<p>然后编译代码</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line"># cd spdk-20.01.1</span><br><span class="line"># .&#x2F;configure --with-dpdk&#x3D;.&#x2F;dpdk-19.11&#x2F;x86_64-native-linuxapp-gcc</span><br><span class="line"># make CONFIG_QFC&#x3D;y</span><br></pre></td></tr></table></figure>
+
+<p>这个步骤里面，如果Linux OS系统是最小化安装的，会提示缺少一些库文件，比如uuid, numactl 之类的。通过yum 或者apt-get 补上就好了。不过在CentOS 系统当中，有CUnit-devel 这个库是官方yum源没有提供，可以从 pkgs.org 上面直接下载。</p>
+<h3 id="4-设置QFC-SPDK-参数"><a href="#4-设置QFC-SPDK-参数" class="headerlink" title="4.设置QFC SPDK 参数"></a>4.设置QFC SPDK 参数</h3><p>上面编译工作都完成之后，就可以启动SPDK了。启动SPDK之前，首先编辑修改一下 <strong>qfc.conf.in</strong> 这个配置文件，文件位于 app/qfc-spdk 目录。</p>
+<p>里面的注释已经比较清楚了，如果是简单测试，其实修改下面几个部分即可：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br><span class="line">32</span><br><span class="line">33</span><br><span class="line">34</span><br><span class="line">35</span><br><span class="line">36</span><br><span class="line">37</span><br></pre></td><td class="code"><pre><span class="line">[QFC]</span><br><span class="line"></span><br><span class="line">  # default transport for physical port(s)</span><br><span class="line">  # FCP or NVME</span><br><span class="line">  Transport FCP</span><br><span class="line">#这里确定采用FC还是FC-NVMe</span><br><span class="line"></span><br><span class="line">[Malloc]</span><br><span class="line">  NumberOfLuns 8</span><br><span class="line">  LunSizeInMB 32</span><br><span class="line">#这里设置malloc内存盘，默认8个卷，每个大小32MB, 也可以使用真实磁盘或者NVMe盘。分别在[aio]，[nvme] 部分设置。</span><br><span class="line"></span><br><span class="line"></span><br><span class="line">[PortalGroup1]</span><br><span class="line">  Portal FC1 21000024ff5ba06a</span><br><span class="line">  Portal FC2 21000024ff5ba06b</span><br><span class="line"></span><br><span class="line">#portalgroup 用来绑定HBA卡的WWN，如果不知道具体wwn，可以在SPDK启动之后，查看系统信息获得，然后再回来修改这里。</span><br><span class="line"></span><br><span class="line">[InitiatorGroup4]</span><br><span class="line">  InitiatorName ALL</span><br><span class="line"></span><br><span class="line">#Initiatorgroup用来映射服务器的WWN，可以不限制，就是ALL，或者指定具体WWN。</span><br><span class="line"></span><br><span class="line"></span><br><span class="line">[TargetNode1]</span><br><span class="line">  TargetName disk1</span><br><span class="line">  TargetAlias &quot;Data Disk1&quot;</span><br><span class="line">  Mapping PortalGroup1 InitiatorGroup4</span><br><span class="line">  LUN0 Malloc4</span><br><span class="line">  LUN1 Malloc5</span><br><span class="line">  LUN2 Malloc6</span><br><span class="line">  LUN3 Malloc7</span><br><span class="line">  QueueDepth 64</span><br><span class="line"></span><br><span class="line"># 这里映射所有的LUN,端口，和服务器主机。必须至少有一个LUN0</span><br><span class="line"></span><br></pre></td></tr></table></figure>
+<p>其他不需要的部分可以直接注释掉。</p>
+<h3 id="5-启动SPDK"><a href="#5-启动SPDK" class="headerlink" title="5. 启动SPDK"></a>5. 启动SPDK</h3><p>首先运行脚本，注册HBA卡：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line"># cd spdk-20.01.1	</span><br><span class="line"># sudo scripts&#x2F;setup.sh</span><br></pre></td></tr></table></figure>
+
+<p>这个动作每次设备重启之后，都需要重新注册一下。</p>
+<p>然后设置系统Huge page，可以通过DPDK 当中 usertools 目录里面的 dpdp-setup.sh 脚本来进行，需要预留至少6GB的内存huge page.</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line"># cd spdk-20.01.1</span><br><span class="line"># .&#x2F;dpdk-19.11&#x2F;usertools&#x2F;dpdk-setup.sh</span><br></pre></td></tr></table></figure>
+
+<p>在这个菜单方式的界面，选择huge page设置，设置的时候，输入内存块的数量，每个块是2MB，所以如果需要8GB的huge page就输入4096。</p>
+<p>最后通过命令行启动SPDK：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">.&#x2F;app&#x2F;qfc-spdk&#x2F;qfc_tgt -c .&#x2F;app&#x2F;qfc-spdk&#x2F;qfc.conf.in</span><br></pre></td></tr></table></figure>
+
+<p>如果在运行中看到如下报错：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">umq: 0: umq_load_file_fw:6260: filestat error &#x2F;lib&#x2F;firmware&#x2F;ql2700_fw.bin</span><br><span class="line">umq: 0: umq_init_hba:3020: Initialization failed.</span><br><span class="line">umq: 0: umq_ctrlr_init:1386: Unable to initialize HBA.</span><br></pre></td></tr></table></figure>
+
+<p>则说明在系统的 /lib/firmware 目录当中缺少firmware 文件，请把ql2700_fw.bin 文件拷贝到这个目录中。</p>
+<p>我在第一次运行SPDK 之后，会看到这行信息：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">umq: 3: umq_handle_aen:149: Target port Link Up: nn-0x20000024ff7799ab:pn-0x21000024ff7799ab</span><br><span class="line"></span><br></pre></td></tr></table></figure>
+
+<p>因此就知道我目前的HBA卡使用的端口，它的WWPN和WWNN号码，把WWPN 替换刚才 qfc.conf.in 文件当中 [PortalGroup1] 模块的内容，把信息改为：</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br></pre></td><td class="code"><pre><span class="line">[PortalGroup1]</span><br><span class="line">#  Portal FC1 21000024ff5ba06a</span><br><span class="line">#  Portal FC2 21000024ff5ba06b</span><br><span class="line"></span><br><span class="line">  Portal FC1 21000024ff7799ab</span><br><span class="line"></span><br><span class="line"></span><br></pre></td></tr></table></figure>
+
+
+<p>然后重启spdk，即可正常启动FCP Target。 如果想测试FC-NVME，还是修改qfc.conf.in 对应模块即可。</p>
+<h3 id="6-服务器host端设置"><a href="#6-服务器host端设置" class="headerlink" title="6. 服务器host端设置"></a>6. 服务器host端设置</h3><p>如果是采用FCP，现在服务器端的HBA卡应该已经可以扫描到4个32M大小的LUN了。lsblk命令应该可以看见sd[X] 的设备，或者/dev目录也能看到。如果看不见，卸载再重新加载一下qla2xxx模块。</p>
+<p>如果是采用FC-NVMe，则是看到4个nvme设备，可以通过nvme list 命令或者lsblk，或者/dev目录查看。Linux 系统需要qla2xxx 驱动模块版本在10.0以上。如果还是8或者9，可以从QLogic网站直接下载升级安装。</p>
+
+    </div>
+
+    
+    
+    
+
+    <footer class="post-footer">
+          <div class="post-tags">
+              <a href="/tags/QLogic/" rel="tag"># QLogic</a>
+              <a href="/tags/SPDK/" rel="tag"># SPDK</a>
+              <a href="/tags/FC/" rel="tag"># FC</a>
+              <a href="/tags/target/" rel="tag"># target</a>
+          </div>
+
+        
+
+          <div class="post-nav">
+            <div class="post-nav-item">
+                <a href="/2018/12/07/ASA5505%20%E4%B8%8A%E5%BA%94%E7%94%A8Let's%20encrypt%20%E7%9A%84%E8%AF%81%E4%B9%A6/" rel="prev" title="ASA5505 uses Let's Encrypt SSL certification">
+                  <i class="fa fa-chevron-left"></i> ASA5505 uses Let's Encrypt SSL certification
+                </a>
+            </div>
+            <div class="post-nav-item">
+                <a href="/2020/09/10/nvmet-nof-target/" rel="next" title="利用nvmet配合 QLogic 41000/45000系列 RNIC创建 NVME over Fabric target系统">
+                  利用nvmet配合 QLogic 41000/45000系列 RNIC创建 NVME over Fabric target系统 <i class="fa fa-chevron-right"></i>
+                </a>
+            </div>
+          </div>
+    </footer>
+  </article>
+  
+  
+  
+
+
+
+      
+
+<script>
+  window.addEventListener('tabs:register', () => {
+    let { activeClass } = CONFIG.comments;
+    if (CONFIG.comments.storage) {
+      activeClass = localStorage.getItem('comments_active') || activeClass;
+    }
+    if (activeClass) {
+      const activeTab = document.querySelector(`a[href="#comment-${activeClass}"]`);
+      if (activeTab) {
+        activeTab.click();
+      }
+    }
+  });
+  if (CONFIG.comments.storage) {
+    window.addEventListener('tabs:click', event => {
+      if (!event.target.matches('.tabs-comment .tab-content .tab-pane')) return;
+      const commentClass = event.target.classList[1];
+      localStorage.setItem('comments_active', commentClass);
+    });
+  }
+</script>
+
+    </div>
+  </main>
+
+  <footer class="footer">
+    <div class="footer-inner">
+      
+
+      
+
+<div class="copyright">
+  
+  &copy; 
+  <span itemprop="copyrightYear">2020</span>
+  <span class="with-love">
+    <i class="fa fa-heart"></i>
+  </span>
+  <span class="author" itemprop="copyrightHolder">Xiaosu</span>
+</div>
+  <div class="powered-by">由 <a href="https://hexo.io/" class="theme-link" rel="noopener" target="_blank">Hexo</a> & <a href="https://theme-next.js.org/" class="theme-link" rel="noopener" target="_blank">NexT.Gemini</a> 强力驱动
+  </div>
+
+    </div>
+  </footer>
+
+  
+  <script src="//cdn.jsdelivr.net/npm/animejs@3.2.0/lib/anime.min.js"></script>
+  <script src="//cdn.jsdelivr.net/npm/@next-theme/pjax@0.4.0/pjax.min.js"></script>
+<script src="/js/utils.js"></script><script src="/js/motion.js"></script><script src="/js/next-boot.js"></script>
+  <script>
+var pjax = new Pjax({
+  selectors: [
+    'head title',
+    '.page-configurations',
+    '.main-inner',
+    '.post-toc-wrap',
+    '.languages',
+    '.pjax'
+  ],
+  analytics: false,
+  cacheBust: false,
+  scrollRestoration: false,
+  scrollTo: !CONFIG.bookmark.enable
+});
+
+document.addEventListener('pjax:success', () => {
+  pjax.executeScripts(document.querySelectorAll('script[data-pjax], .pjax script'));
+  NexT.boot.refresh();
+  // Define Motion Sequence & Bootstrap Motion.
+  if (CONFIG.motion.enable) {
+    NexT.motion.integrator
+      .init()
+      .add(NexT.motion.middleWares.subMenu)
+      .add(NexT.motion.middleWares.postList)
+      .bootstrap();
+  }
+  const hasTOC = document.querySelector('.post-toc');
+  document.querySelector('.sidebar-inner').classList.toggle('sidebar-nav-active', hasTOC);
+  document.querySelector(hasTOC ? '.sidebar-nav-toc' : '.sidebar-nav-overview').click();
+  NexT.utils.updateSidebarPosition();
+});
+</script>
+
+
+  
+
+
+
+
+  <script src="/js/local-search.js"></script>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  
+
+
+
+
+
+
+
+
+    <div class="pjax">
+  
+
+  
+
+    </div>
+</body>
+</html>
